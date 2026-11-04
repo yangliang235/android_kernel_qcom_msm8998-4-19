@@ -1,0 +1,97 @@
+name: Build Kernel with Swappiness 200
+
+on:
+  workflow_dispatch: # 允许手动触发
+  push:
+    branches:
+      - msm8998-oneplus # 你的分支名
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3
+
+    - name: Set up Toolchains (Proton Clang & GCC)
+      run: |
+        # 下载 Proton Clang
+        git clone https://github.com/kdrag0n/proton-clang.git --depth=1 prebuilts/clang/host/linux-x86/proton-clang
+        # 下载 AOSP GCC 交叉编译链
+        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git --depth=1 prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git --depth=1 prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+        
+        # 配置环境变量
+        echo "$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/proton-clang/bin" >> $GITHUB_PATH
+        echo "$GITHUB_WORKSPACE/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
+        echo "$GITHUB_WORKSPACE/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
+
+    - name: Patch Swappiness to 200
+      run: |
+        # 修改 sysctl.c 中的限制
+        sed -i 's/static int one_hundred = 100;/static int one_hundred = 100;\nstatic int two_hundred = 200;/' kernel/sysctl.c
+        sed -i 's/\.extra2[[:space:]]*=[[:space:]]*&one_hundred,/.extra2 = \&two_hundred,/' kernel/sysctl.c
+        echo "=== Patched swappiness limit ==="
+        grep -A 8 '"swappiness"' kernel/sysctl.c
+
+    - name: Build Kernel
+      env:
+        ARCH: arm64
+        CC: clang
+        CLANG_TRIPLE: aarch64-linux-gnu-
+        CROSS_COMPILE: aarch64-linux-android-
+        CROSS_COMPILE_ARM32: arm-linux-androideabi-
+      run: |
+        # 自动查找 vendor 目录下匹配 oneplus 的 defconfig
+        DEFCONFIG_PATH=$(find arch/arm64/configs/vendor/ -name "*msm8998*oneplus*defconfig" | head -n 1)
+        if [ -z "$DEFCONFIG_PATH" ]; then
+          echo "未找到 oneplus 专属 defconfig，尝试回退到 msm8998_defconfig..."
+          DEFCONFIG_PATH=$(find arch/arm64/configs/ -name "msm8998_defconfig" | head -n 1)
+        fi
+        
+        # 剥离前缀，得到 make 命令需要的格式
+        DEFCONFIG_NAME=$(echo "$DEFCONFIG_PATH" | sed 's|arch/arm64/configs/||')
+        echo "使用的 Defconfig: $DEFCONFIG_NAME"
+        
+        # 生成默认配置
+        make O=out ARCH=arm64 CC=clang $DEFCONFIG_NAME
+        
+        # 开始编译
+        make O=out ARCH=arm64 CC=clang \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-android- \
+          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          -j$(nproc --all)
+
+    - name: Package AnyKernel3 Zip
+      run: |
+        # 下载 AnyKernel3
+        git clone https://github.com/osm0sis/AnyKernel3.git -b master AnyKernel3
+        rm -rf AnyKernel3/.git
+        
+        # 检查并拷贝生成的内核镜像 (msm8998 通常生成 Image.gz-dtb)
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        elif [ -f out/arch/arm64/boot/Image.gz ]; then
+          cp out/arch/arm64/boot/Image.gz AnyKernel3/
+        else
+          cp out/arch/arm64/boot/Image AnyKernel3/
+        fi
+        
+        # 打包成卡刷包
+        cd AnyKernel3
+        zip -r9 ../Kernel_MSM8998_Swappiness200_${{ github.run_id }}.zip * -x .git/*
+
+    - name: Upload Flashable ZIP
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnyKernel3-Flashable-Zip
+        path: Kernel_MSM8998_Swappiness200_*.zip
