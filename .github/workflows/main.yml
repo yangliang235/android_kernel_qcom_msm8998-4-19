@@ -244,6 +244,12 @@ jobs:
           if [ -f "drivers/media/platform/msm/camera_v2/common/cam_smmu_api.c" ]; then
             sed -i 's/#include <msm_camera_tz_util.h>/#include "msm_camera_tz_util.h"/g' drivers/media/platform/msm/camera_v2/common/cam_smmu_api.c
           fi
+          
+          # 修复全局 msm_cam.h 中的相对包含路径问题
+          if [ -f "include/trace/events/msm_cam.h" ]; then
+            echo "🔧 修复 msm_cam.h 找不到 msm_isp.h 的问题..."
+            sed -i 's|#include "msm_isp.h"|#include "../../../drivers/media/platform/msm/camera_v2/isp/msm_isp.h"|g' include/trace/events/msm_cam.h
+          fi
 
       - name: Build Kernel
         run: |
