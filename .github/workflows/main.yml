@@ -236,9 +236,13 @@ jobs:
           fi
 
           echo "🔧 修复高通 clk trace.h 找不到的问题..."
-          # 手动给 clk-debug.o 添加 -I$(src) 编译选项
           if [ -f "drivers/clk/qcom/Makefile" ]; then
             grep -q "CFLAGS_clk-debug.o" drivers/clk/qcom/Makefile || echo "CFLAGS_clk-debug.o := -I\$(src)" >> drivers/clk/qcom/Makefile
+          fi
+
+          echo "🔧 修复高通 camera 模块头文件包含问题..."
+          if [ -f "drivers/media/platform/msm/camera_v2/common/cam_smmu_api.c" ]; then
+            sed -i 's/#include <msm_camera_tz_util.h>/#include "msm_camera_tz_util.h"/g' drivers/media/platform/msm/camera_v2/common/cam_smmu_api.c
           fi
 
       - name: Build Kernel
