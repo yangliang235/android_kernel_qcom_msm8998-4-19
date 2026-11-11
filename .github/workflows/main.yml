@@ -24,10 +24,8 @@ jobs:
           mkdir -p prebuilts/clang/host/linux-x86/clang-r596125
           echo "⏳ 正在从 AOSP 官方源下载 Clang r596125 压缩包..."
           
-          # 使用 +archive 接口下载单文件，并带上重试机制防断流
           curl -L --retry 5 --retry-delay 3 -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2026/clang-r596125.tar.gz"
           
-          # 解压到指定目录
           tar -xzf clang.tar.gz -C prebuilts/clang/host/linux-x86/clang-r596125
           rm -f clang.tar.gz
           
@@ -255,9 +253,10 @@ jobs:
             sed -i 's|#include "msm_isp.h"|#include "../../../drivers/media/platform/msm/camera_v2/isp/msm_isp.h"|g' include/trace/events/msm_cam.h
           fi
           
-          echo "🔧 修复 msm_sensor.h 找不到 msm_camera_i2c.h 的问题..."
+          echo "🔧 修复 msm_sensor.h 内所有同级目录下的头文件引用..."
           if [ -f "drivers/media/platform/msm/camera_v2/sensor/msm_sensor.h" ]; then
             sed -i 's|#include "msm_camera_i2c.h"|#include "io/msm_camera_i2c.h"|g' drivers/media/platform/msm/camera_v2/sensor/msm_sensor.h
+            sed -i 's|#include "msm_camera_dt_util.h"|#include "io/msm_camera_dt_util.h"|g' drivers/media/platform/msm/camera_v2/sensor/msm_sensor.h
           fi
 
       - name: Build Kernel
