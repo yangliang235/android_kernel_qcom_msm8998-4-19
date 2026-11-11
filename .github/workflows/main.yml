@@ -21,11 +21,16 @@ jobs:
 
       - name: Set up AOSP Clang Toolchain
         run: |
-          mkdir -p prebuilts/clang/host/linux-x86/
-          echo "⏳ 正在从 AOSP 官方源拉取 Clang r596125..."
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 aosp-clang-tmp
-          mv aosp-clang-tmp/clang-r596125 prebuilts/clang/host/linux-x86/
-          rm -rf aosp-clang-tmp
+          mkdir -p prebuilts/clang/host/linux-x86/clang-r596125
+          echo "⏳ 正在从 AOSP 官方源下载 Clang r596125 压缩包..."
+          
+          # 使用 +archive 接口下载单文件，并带上重试机制防断流
+          curl -L --retry 5 --retry-delay 3 -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2026/clang-r596125.tar.gz"
+          
+          # 解压到指定目录
+          tar -xzf clang.tar.gz -C prebuilts/clang/host/linux-x86/clang-r596125
+          rm -f clang.tar.gz
+          
           echo "PATH=$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-r596125/bin:$PATH" >> $GITHUB_ENV
           echo "✅ Clang 准备完毕"
 
@@ -245,9 +250,8 @@ jobs:
             sed -i 's/#include <msm_camera_tz_util.h>/#include "msm_camera_tz_util.h"/g' drivers/media/platform/msm/camera_v2/common/cam_smmu_api.c
           fi
           
-          # 修复全局 msm_cam.h 中的相对包含路径问题
+          echo "🔧 修复 msm_cam.h 找不到 msm_isp.h 的问题..."
           if [ -f "include/trace/events/msm_cam.h" ]; then
-            echo "🔧 修复 msm_cam.h 找不到 msm_isp.h 的问题..."
             sed -i 's|#include "msm_isp.h"|#include "../../../drivers/media/platform/msm/camera_v2/isp/msm_isp.h"|g' include/trace/events/msm_cam.h
           fi
 
