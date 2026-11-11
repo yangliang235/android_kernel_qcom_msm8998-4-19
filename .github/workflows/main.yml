@@ -162,66 +162,65 @@ jobs:
 
           # --- 修补 binder.c ---
           binder_c_targets = [
-              (r'static void binder_transaction\(', '#include "../rekernel/rekernel.h"\n', 'before'),
-              # 按照官方文档，插在 unlock 之后
-              (r'binder_inner_proc_unlock\(target_thread->proc\);', '''
-          		if (start_rekernel_server() == 0) {
-          			if (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
-          				(task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) &&
-          				(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
-          				char binder_kmsg[PACKET_SIZE];
-          				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-          				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          			}
-          		}
-          ''', 'after'),
+              # 在第一个 #include 后面插入头文件，确保全局生效
+              (r'(#include\s+["<][^">]+[">])', '\n#include "../rekernel/rekernel.h"', 'after'),
+              # 匹配从 target_proc = ... 到 binder_inner_proc_unlock(...) 的完整连续代码块
+              (r'target_proc = target_thread->proc;[\s\S]*?binder_inner_proc_unlock\(target_thread->proc\);', '''
+		if (start_rekernel_server() == 0) {
+			if (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
+				(task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) &&
+				(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
+				char binder_kmsg[PACKET_SIZE];
+				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+			}
+		}
+''', 'after'),
               (r'e->to_node = target_node->debug_id;', '''
-          		if (start_rekernel_server() == 0) {
-          			if (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
-          				(task_uid(target_proc->tsk).val > MIN_USERAPP_UID) &&
-          				(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
-          				char binder_kmsg[PACKET_SIZE];
-          				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-          				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          			}
-          		}
-          ''', 'after')
+		if (start_rekernel_server() == 0) {
+			if (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
+				(task_uid(target_proc->tsk).val > MIN_USERAPP_UID) &&
+				(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
+				char binder_kmsg[PACKET_SIZE];
+				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+			}
+		}
+''', 'after')
           ]
 
           # --- 修补 binder_alloc.c ---
-          # 使用正则精准匹配 binder_alloc_new_buf_locked 的函数体开头，防止变量插错位置
           alloc_c_targets = [
-              (r'static struct binder_buffer \*binder_alloc_new_buf_locked\(', '#include "../rekernel/rekernel.h"\n', 'before'),
+              (r'(#include\s+["<][^">]+[">])', '\n#include "../rekernel/rekernel.h"', 'after'),
               (r'(static struct binder_buffer \*binder_alloc_new_buf_locked\([\s\S]*?\)\s*\{)', '\n\tstruct task_struct *proc_task = NULL;\n', 'after'),
               (r'if \(is_async\s*&&', '''
-          	if (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
-          		rcu_read_lock();
-          		proc_task = find_task_by_vpid(alloc->pid);
-          		rcu_read_unlock();
-          		if (proc_task != NULL && start_rekernel_server() == 0) {
-          			if (line_is_frozen(proc_task)) {
-          				char binder_kmsg[PACKET_SIZE];
-          				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
-          				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          			}
-          		}
-          	}
-          ''', 'before')
+	if (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
+		rcu_read_lock();
+		proc_task = find_task_by_vpid(alloc->pid);
+		rcu_read_unlock();
+		if (proc_task != NULL && start_rekernel_server() == 0) {
+			if (line_is_frozen(proc_task)) {
+				char binder_kmsg[PACKET_SIZE];
+				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
+				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+			}
+		}
+	}
+''', 'before')
           ]
 
           # --- 修补 signal.c ---
           signal_c_targets = [
-              (r'int do_send_sig_info\(', '#include "../drivers/rekernel/rekernel.h"\n', 'before'),
-              # 精准定位到 int ret = -ESRCH; 后面插入，防止报错
+              (r'(#include\s+["<][^">]+[">])', '\n#include "../drivers/rekernel/rekernel.h"', 'after'),
               (r'int do_send_sig_info\([\s\S]*?int ret = -ESRCH;', '''
-          	if (start_rekernel_server() == 0) {
-          		if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
-          			char binder_kmsg[PACKET_SIZE];
-          			snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
-          			send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          		}
-          	}
-          ''', 'after')
+	if (start_rekernel_server() == 0) {
+		if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
+			char binder_kmsg[PACKET_SIZE];
+			snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
+			send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+		}
+	}
+''', 'after')
           ]
 
           patch_file('drivers/android/binder.c', binder_c_targets)
@@ -268,7 +267,7 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # 使用 -j2 或 -j4 限制并发，大幅降低 LLVM Broken pipe 概率
+          # 使用 -j4 限制并发，防止内存爆满导致的 LLVM Broken pipe 噪音
           echo "🚀 开始编译内核主体（使用 -j4 防爆内存）..."
           make $MAKE_ARGS -j4 Image.gz-dtb 2>&1 | tee build.log
           
