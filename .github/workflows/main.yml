@@ -160,63 +160,68 @@ jobs:
               with open(filepath, 'w') as f: f.write(content)
               print(f"✅ 成功修补 {filepath}")
 
+          # --- 修补 binder.c ---
           binder_c_targets = [
               (r'static void binder_transaction\(', '#include "../rekernel/rekernel.h"\n', 'before'),
-              (r'\s*target_proc\s*=\s*target_thread->proc;', '''
-          \t\tif (start_rekernel_server() == 0) {
-          \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
-          \t\t\t\t(task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) &&
-          \t\t\t\t(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
-          \t\t\t\tchar binder_kmsg[PACKET_SIZE];
-          \t\t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-          \t\t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          \t\t\t}
-          \t\t}
-          ''', 'before'),
-              (r'e->to_node\s*=\s*target_node->debug_id;', '''
-          \t\tif (start_rekernel_server() == 0) {
-          \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
-          \t\t\t\t(task_uid(target_proc->tsk).val > MIN_USERAPP_UID) &&
-          \t\t\t\t(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
-          \t\t\t\tchar binder_kmsg[PACKET_SIZE];
-          \t\t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-          \t\t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          \t\t\t}
-          \t\t}
+              # 按照官方文档，插在 unlock 之后
+              (r'binder_inner_proc_unlock\(target_thread->proc\);', '''
+          		if (start_rekernel_server() == 0) {
+          			if (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
+          				(task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) &&
+          				(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
+          				char binder_kmsg[PACKET_SIZE];
+          				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+          				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          			}
+          		}
+          ''', 'after'),
+              (r'e->to_node = target_node->debug_id;', '''
+          		if (start_rekernel_server() == 0) {
+          			if (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
+          				(task_uid(target_proc->tsk).val > MIN_USERAPP_UID) &&
+          				(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
+          				char binder_kmsg[PACKET_SIZE];
+          				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+          				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          			}
+          		}
           ''', 'after')
           ]
 
+          # --- 修补 binder_alloc.c ---
+          # 使用正则精准匹配 binder_alloc_new_buf_locked 的函数体开头，防止变量插错位置
           alloc_c_targets = [
               (r'static struct binder_buffer \*binder_alloc_new_buf_locked\(', '#include "../rekernel/rekernel.h"\n', 'before'),
-              (r'struct rb_node \*n = alloc->free_buffers.rb_node;', '\n\tstruct task_struct *proc_task = NULL;\n', 'before'),
+              (r'(static struct binder_buffer \*binder_alloc_new_buf_locked\([\s\S]*?\)\s*\{)', '\n\tstruct task_struct *proc_task = NULL;\n', 'after'),
               (r'if \(is_async\s*&&', '''
-          \tif (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
-          \t\trcu_read_lock();
-          \t\tproc_task = find_task_by_vpid(alloc->pid);
-          \t\trcu_read_unlock();
-          \t\tif (proc_task != NULL && start_rekernel_server() == 0) {
-          \t\t\tif (line_is_frozen(proc_task)) {
-          \t\t\t\tchar binder_kmsg[PACKET_SIZE];
-          \t\t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
-          \t\t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          \t\t\t}
-          \t\t}
-          \t}
+          	if (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
+          		rcu_read_lock();
+          		proc_task = find_task_by_vpid(alloc->pid);
+          		rcu_read_unlock();
+          		if (proc_task != NULL && start_rekernel_server() == 0) {
+          			if (line_is_frozen(proc_task)) {
+          				char binder_kmsg[PACKET_SIZE];
+          				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
+          				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          			}
+          		}
+          	}
           ''', 'before')
           ]
 
+          # --- 修补 signal.c ---
           signal_c_targets = [
-              # 这里修复了路径：signal.c 在 kernel/ 目录下，需要跳过一层到根目录，再进 drivers/
               (r'int do_send_sig_info\(', '#include "../drivers/rekernel/rekernel.h"\n', 'before'),
-              (r'if \(lock_task_sighand\(p, &flags\)\) {', '''
-          \tif (start_rekernel_server() == 0) {
-          \t\tif (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
-          \t\t\tchar binder_kmsg[PACKET_SIZE];
-          \t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
-          \t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
-          \t\t}
-          \t}
-          ''', 'before')
+              # 精准定位到 int ret = -ESRCH; 后面插入，防止报错
+              (r'int do_send_sig_info\([\s\S]*?int ret = -ESRCH;', '''
+          	if (start_rekernel_server() == 0) {
+          		if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
+          			char binder_kmsg[PACKET_SIZE];
+          			snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
+          			send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          		}
+          	}
+          ''', 'after')
           ]
 
           patch_file('drivers/android/binder.c', binder_c_targets)
@@ -263,8 +268,8 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # 使用 -j4 限制并发，防止内存爆满导致的 LLVM Broken pipe
-          echo "🚀 开始编译内核主体（使用 -j4 以防内存溢出）..."
+          # 使用 -j2 或 -j4 限制并发，大幅降低 LLVM Broken pipe 概率
+          echo "🚀 开始编译内核主体（使用 -j4 防爆内存）..."
           make $MAKE_ARGS -j4 Image.gz-dtb 2>&1 | tee build.log
           
           echo "🚀 开始编译内核模块..."
