@@ -1,371 +1,280 @@
-name: Build Kernel with Swappiness 200, NoMount & ReKernel
+name: Build Kernel (Swappiness, NoMount, ReKernel)
 
 on:
-  workflow_dispatch: # 允许手动触发
-  push:
-    branches:
-      - msm8998-oneplus-k # 你的分支名
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    
+    name: Build by ${{ github.actor }}
+    runs-on: ubuntu-22.04
     steps:
-    - name: Checkout Kernel Source
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libwxgtk3.0-gtk3-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
 
-    - name: Set up Toolchains (Proton Clang & GCC)
-      run: |
-        # 下载 Proton Clang
-        git clone https://github.com/kdrag0n/proton-clang.git --depth=1 prebuilts/clang/host/linux-x86/proton-clang
-        # 下载 AOSP GCC 交叉编译链
-        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git --depth=1 prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git --depth=1 prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
-        
-        # 配置环境变量
-        echo "$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/proton-clang/bin" >> $GITHUB_PATH
-        echo "$GITHUB_WORKSPACE/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
-        echo "$GITHUB_WORKSPACE/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
+      - name: Set up AOSP Clang Toolchain
+        run: |
+          mkdir -p prebuilts/clang/host/linux-x86/
+          git clone --depth=1 https://github.com/kdrag0n/aosp-clang -b clang-r596125 prebuilts/clang/host/linux-x86/clang-r596125
+          echo "PATH=$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-r596125/bin:$PATH" >> $GITHUB_ENV
 
-    - name: Patch Swappiness to 200
-      run: |
-        # 修改 sysctl.c 中的限制
-        sed -i 's/static int one_hundred = 100;/static int one_hundred = 100;\nstatic int two_hundred = 200;/' kernel/sysctl.c
-        sed -i 's/\.extra2[[:space:]]*=[[:space:]]*&one_hundred,/.extra2 = \&two_hundred,/' kernel/sysctl.c
-        echo "=== Patched swappiness limit ==="
-        grep -A 8 '"swappiness"' kernel/sysctl.c
+      - name: Integrate NoMount
+        run: |
+          echo "🔧 正在集成 NoMount..."
+          curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+          echo "✅ NoMount 源码拉取完毕"
 
-    - name: Integrate NoMount (Built-in)
-      run: |
-        # 使用官方脚本自动将 NoMount 补丁打入内核源码
-        curl -s https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
-        echo "=== NoMount Integration Finished ==="
-        ls -la fs/nomount/
+      - name: Integrate Re:Kernel
+        run: |
+          echo "🔧 正在集成 Re:Kernel 并规避 JOBCTL 问题..."
+          
+          # 1. 创建 ReKernel 头文件，并直接加入规避报错的 jobctl.h
+          mkdir -p drivers/rekernel
+          cat << 'EOF' > drivers/rekernel/rekernel.h
+          #ifndef _LINUX_REKERNEL_H
+          #define _LINUX_REKERNEL_H
 
-    - name: Integrate Re:Kernel
-      run: |
-        # 1. 创建 rekernel 源码和头文件
-        mkdir -p drivers/rekernel
+          #include <linux/init.h>
+          #include <linux/types.h>
+          #include <net/sock.h>
+          #include <linux/netlink.h>
+          #include <linux/proc_fs.h>
+          #include <linux/freezer.h>
+          #include <linux/sched/jobctl.h> // 规避 JOBCTL_TRAP_FREEZE 报错
 
-        cat << 'EOF' > drivers/rekernel/rekernel.h
-        #ifndef _REKERNEL_H
-        #define _REKERNEL_H
+          #define NETLINK_REKERNEL_MAX     		26
+          #define NETLINK_REKERNEL_MIN     		22
+          #define USER_PORT        			100
+          #define PACKET_SIZE 				128
+          #define MIN_USERAPP_UID 			(10000)
+          #define MAX_SYSTEM_UID  			(2000)
+          #define RESERVE_ORDER				17
+          #define WARN_AHEAD_SPACE			(1 << RESERVE_ORDER)
 
-        #include <linux/sched/jobctl.h> /* 规避 JOBCTL_TRAP_FREEZE 报错问题 */
+          extern int start_rekernel_server(void);
+          extern int send_netlink_message(char *msg, uint16_t len);
 
-        #define NETLINK_REKERNEL_MAX			26
-        #define NETLINK_REKERNEL_MIN			22
-        #define USER_PORT					100
-        #define PACKET_SIZE					128
-        #define MIN_USERAPP_UID				(10000)
-        #define MAX_SYSTEM_UID					(2000)
-        #define RESERVE_ORDER					17
-        #define WARN_AHEAD_SPACE				(1 << RESERVE_ORDER)
+          static inline bool line_is_frozen(struct task_struct *task)
+          {
+              return frozen(task->group_leader) || freezing(task->group_leader);
+          }
+          #endif
+          EOF
 
-        extern int start_rekernel_server(void);
-        extern int send_netlink_message(char *msg, uint16_t len);
-        extern bool line_is_frozen(struct task_struct *task);
+          # 2. 创建 ReKernel 源文件（去掉原文档里的 static 以便全局调用）
+          cat << 'EOF' > drivers/rekernel/rekernel.c
+          #include "rekernel.h"
+          #include <linux/kernel.h>
+          #include <linux/version.h>
 
-        #endif
-        EOF
+          struct sock *rekernel_netlink = NULL;
+          extern struct net init_net;
+          int netlink_unit = NETLINK_REKERNEL_MIN;
 
-        cat << 'EOF' > drivers/rekernel/rekernel.c
-        #include <linux/init.h>
-        #include <linux/types.h>
-        #include <net/sock.h>
-        #include <linux/netlink.h>
-        #include <linux/proc_fs.h>
-        #include <linux/freezer.h>
-        #include "rekernel.h"
+          int send_netlink_message(char *msg, uint16_t len) {
+              struct sk_buff *skbuffer;
+              struct nlmsghdr *nlhdr;
+              skbuffer = nlmsg_new(len, GFP_ATOMIC);
+              if (!skbuffer) return -1;
+              nlhdr = nlmsg_put(skbuffer, 0, 0, netlink_unit, len, 0);
+              if (!nlhdr) {
+                  nlmsg_free(skbuffer);
+                  return -1;
+              }
+              memcpy(nlmsg_data(nlhdr), msg, len);
+              return netlink_unicast(rekernel_netlink, skbuffer, USER_PORT, MSG_DONTWAIT);
+          }
 
-        static struct sock *rekernel_netlink = NULL;
-        extern struct net init_net;
-        static int netlink_unit = NETLINK_REKERNEL_MIN;
+          static void netlink_rcv_msg(struct sk_buff *skbuffer) { }
+          static struct netlink_kernel_cfg rekernel_cfg = { .input = netlink_rcv_msg, };
 
-        bool line_is_frozen(struct task_struct *task)
-        {
-            return frozen(task->group_leader) || freezing(task->group_leader);
-        }
+          static int rekernel_unit_show(struct seq_file *m, void *v) {
+          	seq_printf(m, "%d\n", netlink_unit);
+          	return 0;
+          }
+          static int rekernel_unit_open(struct inode *inode, struct file *file) {
+          	return single_open(file, rekernel_unit_show, NULL);
+          }
+          static const struct file_operations rekernel_unit_fops = {
+          	.open   = rekernel_unit_open,
+          	.read   = seq_read,
+          	.llseek   = seq_lseek,
+          	.release   = single_release,
+          	.owner   = THIS_MODULE,
+          };
+          static struct proc_dir_entry *rekernel_dir, *rekernel_unit_entry;
 
-        int send_netlink_message(char *msg, uint16_t len) {
-            struct sk_buff *skbuffer;
-            struct nlmsghdr *nlhdr;
-
-            skbuffer = nlmsg_new(len, GFP_ATOMIC);
-            if (!skbuffer) {
-                printk("netlink alloc failure.\n");
-                return -1;
+          int start_rekernel_server(void) {
+            if (rekernel_netlink != NULL) return 0;
+            for (netlink_unit = NETLINK_REKERNEL_MIN; netlink_unit < NETLINK_REKERNEL_MAX; netlink_unit++) {
+              rekernel_netlink = (struct sock *)netlink_kernel_create(&init_net, netlink_unit, &rekernel_cfg);
+              if (rekernel_netlink != NULL) break;
             }
-
-            nlhdr = nlmsg_put(skbuffer, 0, 0, netlink_unit, len, 0);
-            if (!nlhdr) {
-                printk("nlmsg_put failaure.\n");
-                nlmsg_free(skbuffer);
-                return -1;
+            if (rekernel_netlink == NULL) return -1;
+            rekernel_dir = proc_mkdir("rekernel", NULL);
+            if (rekernel_dir) {
+                char buff[32];
+                sprintf(buff, "%d", netlink_unit);
+                rekernel_unit_entry = proc_create(buff, 0644, rekernel_dir, &rekernel_unit_fops);
             }
-
-            memcpy(nlmsg_data(nlhdr), msg, len);
-            return netlink_unicast(rekernel_netlink, skbuffer, USER_PORT, MSG_DONTWAIT);
-        }
-
-        static void netlink_rcv_msg(struct sk_buff *skbuffer) { // Ignore recv msg.
-        }
-
-        static struct netlink_kernel_cfg rekernel_cfg = { 
-            .input = netlink_rcv_msg,
-        };
-
-        static int rekernel_unit_show(struct seq_file *m, void *v)
-        {
-            seq_printf(m, "%d\n", netlink_unit);
             return 0;
-        }
-
-        static int rekernel_unit_open(struct inode *inode, struct file *file)
-        {
-            return single_open(file, rekernel_unit_show, NULL);
-        }
-
-        static const struct file_operations rekernel_unit_fops = {
-            .open   = rekernel_unit_open,
-            .read   = seq_read,
-            .llseek   = seq_lseek,
-            .release   = single_release,
-            .owner   = THIS_MODULE,
-        };
-
-        static struct proc_dir_entry *rekernel_dir, *rekernel_unit_entry;
-
-        int start_rekernel_server(void) {
-          if (rekernel_netlink != NULL)
-            return 0;
-          for (netlink_unit = NETLINK_REKERNEL_MIN; netlink_unit < NETLINK_REKERNEL_MAX; netlink_unit++) {
-            rekernel_netlink = (struct sock *)netlink_kernel_create(&init_net, netlink_unit, &rekernel_cfg);
-            if (rekernel_netlink != NULL)
-              break;
           }
-          if (rekernel_netlink == NULL) {
-            printk("Failed to create Re:Kernel server!\n");
-            return -1;
-          }
-          printk("Created Re:Kernel server! NETLINK UNIT: %d\n", netlink_unit);
-          rekernel_dir = proc_mkdir("rekernel", NULL);
-          if (!rekernel_dir)
-              printk("create /proc/rekernel failed!\n");
-          else {
-              char buff[32];
-              sprintf(buff, "%d", netlink_unit);
-              rekernel_unit_entry = proc_create(buff, 0644, rekernel_dir, &rekernel_unit_fops);
-              if (!rekernel_unit_entry)
-                  printk("create rekernel unit failed!\n");
-          }
-          return 0;
-        }
-        EOF
+          EOF
 
-        cat << 'EOF' > drivers/rekernel/Makefile
-        obj-y += rekernel.o
-        EOF
+          # 3. 注册到编译系统
+          echo "obj-\$(CONFIG_REKERNEL) += rekernel.o" > drivers/rekernel/Makefile
+          echo "source \"drivers/rekernel/Kconfig\"" >> drivers/Kconfig
+          echo "obj-\$(CONFIG_REKERNEL) += rekernel/" >> drivers/Makefile
+          cat << 'EOF' > drivers/rekernel/Kconfig
+          config REKERNEL
+              bool "Re:Kernel support"
+              default y
+          EOF
 
-        cat << 'EOF' > drivers/rekernel/Kconfig
-        config REKERNEL
-            bool "Re:Kernel"
-            default y
-            help
-              Re:Kernel integration
-        EOF
+          # 4. 执行 Python 脚本精准打补丁
+          python3 - << 'PYEOF'
+          import sys
 
-        # 2. 更新父级 Makefile 和 Kconfig
-        grep -q "obj-y += rekernel/" drivers/Makefile || echo 'obj-y += rekernel/' >> drivers/Makefile
-        grep -q 'source "drivers/rekernel/Kconfig"' drivers/Kconfig || echo 'source "drivers/rekernel/Kconfig"' >> drivers/Kconfig
+          def patch_file(filepath, targets):
+              with open(filepath, 'r') as f: content = f.read()
+              for target, insert_code, pos in targets:
+                  if target not in content:
+                      print(f"❌ 致命错误: 找不到特征码 -> {filepath} : {target}")
+                      sys.exit(1)
+                  if pos == 'before':
+                      content = content.replace(target, insert_code + target, 1)
+                  else:
+                      content = content.replace(target, target + insert_code, 1)
+              with open(filepath, 'w') as f: f.write(content)
+              print(f"✅ 成功修补 {filepath}")
 
-        # 3. 使用 Python 自动注入补丁代码
-        python3 << 'PYEOF'
-        import re
+          # --- 修补 binder.c ---
+          binder_c_targets = [
+              # 插入 include
+              ('#include <linux/sched.h>', '\n#include "../rekernel/rekernel.h"', 'after'),
+              # 第一处插入
+              ('\t\ttarget_proc = target_thread->proc;', '''
+          \t\tif (start_rekernel_server() == 0) {
+          \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
+          \t\t\t\t(task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) &&
+          \t\t\t\t(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
+          \t\t\t\tchar binder_kmsg[PACKET_SIZE];
+          \t\t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+          \t\t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          \t\t\t}
+          \t\t}
+          ''', 'before'),
+              # 第二处插入
+              ('\t\te->to_node = target_node->debug_id;', '''
+          \t\tif (start_rekernel_server() == 0) {
+          \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
+          \t\t\t\t(task_uid(target_proc->tsk).val > MIN_USERAPP_UID) &&
+          \t\t\t\t(proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
+          \t\t\t\tchar binder_kmsg[PACKET_SIZE];
+          \t\t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+          \t\t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          \t\t\t}
+          \t\t}
+          ''', 'after')
+          ]
 
-        def patch_file(filepath, replacements, include_line):
-            with open(filepath, 'r') as f:
-                content = f.read()
+          # --- 修补 binder_alloc.c ---
+          alloc_c_targets = [
+              ('#include "binder_alloc.h"', '\n#include "../rekernel/rekernel.h"', 'after'),
+              ('\tstruct rb_node *n = alloc->free_buffers.rb_node;', '\n\tstruct task_struct *proc_task = NULL;', 'before'),
+              ('\tif (is_async &&\n\t    alloc->free_async_space < size + sizeof(struct binder_buffer)) {', '''
+          \tif (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
+          \t\trcu_read_lock();
+          \t\tproc_task = find_task_by_vpid(alloc->pid);
+          \t\trcu_read_unlock();
+          \t\tif (proc_task != NULL && start_rekernel_server() == 0) {
+          \t\t\tif (line_is_frozen(proc_task)) {
+          \t\t\t\tchar binder_kmsg[PACKET_SIZE];
+          \t\t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
+          \t\t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          \t\t\t}
+          \t\t}
+          \t}
+          ''', 'before')
+          ]
 
-            if "start_rekernel_server()" in content:
-                print(f"Already patched: {filepath}")
-            else:
-                for old, new in replacements:
-                    if old in content:
-                        content = content.replace(old, new, 1)
-                    else:
-                        print(f"Warning: Exact anchor not found in {filepath}. Trying flexible whitespace...")
-                        # 灵活空格匹配，应对不同内核版本的缩进差异
-                        pattern = re.escape(old).replace(r'\ ', r'\s+').replace(r'\t', r'\s+')
-                        pattern = pattern.replace(r'\n', r'\s*\n\s*')
-                        if re.search(pattern, content):
-                            content = re.sub(pattern, lambda m: new, content, count=1)
-                        else:
-                            print(f"Error: Failed to patch {filepath}. Anchor: {old[:40]}")
+          # --- 修补 signal.c ---
+          signal_c_targets = [
+              ('#include <linux/sched/task.h>', '\n#include "../rekernel/rekernel.h"', 'after'),
+              ('\tif (lock_task_sighand(p, &flags)) {', '''
+          \tif (start_rekernel_server() == 0) {
+          \t\tif (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
+          \t\t\tchar binder_kmsg[PACKET_SIZE];
+          \t\t\tsnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
+          \t\t\tsend_netlink_message(binder_kmsg, strlen(binder_kmsg));
+          \t\t}
+          \t}
+          ''', 'before')
+          ]
 
-                # 添加头文件
-                if include_line not in content:
-                    match = re.search(r'#include\s+[<"][^>"]+[>"]', content)
-                    if match:
-                        content = content[:match.end()] + "\n" + include_line + content[match.end():]
-                    else:
-                        content = include_line + "\n" + content
+          patch_file('drivers/android/binder.c', binder_c_targets)
+          patch_file('drivers/android/binder_alloc.c', alloc_c_targets)
+          patch_file('kernel/signal.c', signal_c_targets)
+          print("🎉 Re:Kernel 补丁全部打入成功！")
+          PYEOF
 
-                with open(filepath, 'w') as f:
-                    f.write(content)
+      - name: Modify Swappiness & Defconfig
+        run: |
+          echo "🔧 修改 Swappiness 和强制开启配置..."
+          if [ -f "mm/swap.c" ]; then
+            sed -i 's/int vm_swappiness = 60;/int vm_swappiness = 200;/g' mm/swap.c
+            sed -i 's/int vm_swappiness __read_mostly = CONFIG_DEFAULT_SWAPPINESS;/int vm_swappiness __read_mostly = 200;/g' mm/swap.c
+          fi
+          if grep -q "config DEFAULT_SWAPPINESS" mm/Kconfig; then
+            sed -i '/config DEFAULT_SWAPPINESS/,/default 60/ s/default 60/default 200/' mm/Kconfig
+          fi
+          
+          DEFCONFIG_FILE=$(ls arch/arm64/configs/*oneplus* 2>/dev/null | head -n 1)
+          if [ -z "$DEFCONFIG_FILE" ]; then
+             DEFCONFIG_FILE=$(ls arch/arm64/configs/*msm8998* 2>/dev/null | head -n 1)
+          fi
+          
+          if [ -n "$DEFCONFIG_FILE" ]; then
+            echo "CONFIG_DEFAULT_SWAPPINESS=200" >> $DEFCONFIG_FILE
+            echo "CONFIG_NOMOUNT=y" >> $DEFCONFIG_FILE
+            echo "CONFIG_REKERNEL=y" >> $DEFCONFIG_FILE
+          fi
 
-        # 补丁 drivers/android/binder.c
-        binder_c_replacements = [
-            (
-                "binder_inner_proc_unlock(target_thread->proc);\n\t} else {",
-                """binder_inner_proc_unlock(target_thread->proc);
-		if (start_rekernel_server() == 0) {
-			if (target_proc
-				&& (NULL != target_proc->tsk)
-				&& (NULL != proc->tsk)
-				&& (task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID)
-				&& (proc->pid != target_proc->pid)
-				&& line_is_frozen(target_proc->tsk)) {
-				char binder_kmsg[PACKET_SIZE];
-				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-			}
-		}
-	} else {"""
-            ),
-            (
-                "e->to_node = target_node->debug_id;\n\t\tif (security_binder_transaction(proc->cred,",
-                """e->to_node = target_node->debug_id;
-		if (start_rekernel_server() == 0) {
-			if (target_proc
-				&& (NULL != target_proc->tsk)
-				&& (NULL != proc->tsk)
-				&& (task_uid(target_proc->tsk).val > MIN_USERAPP_UID)
-				&& (proc->pid != target_proc->pid)
-				&& line_is_frozen(target_proc->tsk)) {
-				char binder_kmsg[PACKET_SIZE];
-				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-			}
-		}
-		if (security_binder_transaction(proc->cred,"""
-            )
-        ]
-        patch_file('drivers/android/binder.c', binder_c_replacements, '#include "../rekernel/rekernel.h"')
+      - name: Build Kernel
+        run: |
+          make clean && make mrproper
+          MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu-"
+          DEFCONFIG_NAME="vendor/oneplus/msm8998_defconfig"
+          if [ ! -f "arch/arm64/configs/$DEFCONFIG_NAME" ]; then
+             DEFCONFIG_NAME=$(ls arch/arm64/configs/ | grep msm8998 | head -n 1)
+          fi
+          echo "🚀 开始编译..."
+          make $MAKE_ARGS $DEFCONFIG_NAME
+          make $MAKE_ARGS -j$(nproc) 2>&1 | tee build.log
 
-        # 补丁 drivers/android/binder_alloc.c
-        binder_alloc_replacements = [
-            (
-                "{\n\tstruct rb_node *n = alloc->free_buffers.rb_node;",
-                "{\n\tstruct task_struct *proc_task = NULL;\n\tstruct rb_node *n = alloc->free_buffers.rb_node;"
-            ),
-            (
-                "\t\treturn ERR_PTR(-EINVAL);\n\t}\n\tif (is_async &&",
-                """		return ERR_PTR(-EINVAL);
-	}
-	if (is_async
-		&& (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer))
-		|| (alloc->free_async_space < WARN_AHEAD_SPACE))) {
-		rcu_read_lock();
-		proc_task = find_task_by_vpid(alloc->pid);
-		rcu_read_unlock();
-		if (proc_task != NULL && start_rekernel_server() == 0) {
-			if (line_is_frozen(proc_task)) {
-				char binder_kmsg[PACKET_SIZE];
-				snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
-				send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-			}
-		}
-	}
-	if (is_async &&"""
-            )
-        ]
-        patch_file('drivers/android/binder_alloc.c', binder_alloc_replacements, '#include "../rekernel/rekernel.h"')
+      - name: Package Kernel (AnyKernel3)
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master AnyKernel3
+          rm -rf AnyKernel3/.git
+          KERNEL_IMAGE=$(find arch/arm64/boot -name "Image.gz*" | head -n 1)
+          if [ -n "$KERNEL_IMAGE" ]; then
+            cp $KERNEL_IMAGE AnyKernel3/
+            cd AnyKernel3
+            zip -r9 ../Kernel_AllInOne_${{ github.run_number }}.zip *
+          else
+            echo "❌ 编译失败！"
+            exit 1
+          fi
 
-        # 补丁 kernel/signal.c
-        signal_replacements = [
-            (
-                "int ret = -ESRCH;\n\tif (lock_task_sighand(p, &flags)) {",
-                """int ret = -ESRCH;
-	if (start_rekernel_server() == 0) {
-		if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
-			char binder_kmsg[PACKET_SIZE];
-			snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
-			send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-		}
-	}
-	if (lock_task_sighand(p, &flags)) {"""
-            )
-        ]
-        patch_file('kernel/signal.c', signal_replacements, '#include "../drivers/rekernel/rekernel.h"')
-
-        PYEOF
-        echo "=== Re:Kernel Integration Finished ==="
-
-    - name: Build Kernel
-      env:
-        ARCH: arm64
-        CC: clang
-        CLANG_TRIPLE: aarch64-linux-gnu-
-        CROSS_COMPILE: aarch64-linux-android-
-        CROSS_COMPILE_ARM32: arm-linux-androideabi-
-      run: |
-        # 自动查找 vendor 目录下匹配 oneplus 的 defconfig
-        DEFCONFIG_PATH=$(find arch/arm64/configs/vendor/ -name "*msm8998*oneplus*defconfig" | head -n 1)
-        if [ -z "$DEFCONFIG_PATH" ]; then
-          echo "未找到 oneplus 专属 defconfig，尝试回退到 msm8998_defconfig..."
-          DEFCONFIG_PATH=$(find arch/arm64/configs/ -name "msm8998_defconfig" | head -n 1)
-        fi
-        
-        # 剥离前缀，得到 make 命令需要的格式
-        DEFCONFIG_NAME=$(echo "$DEFCONFIG_PATH" | sed 's|arch/arm64/configs/||')
-        echo "使用的 Defconfig: $DEFCONFIG_NAME"
-        
-        # 生成默认配置
-        make O=out ARCH=arm64 CC=clang $DEFCONFIG_NAME
-        
-        # 强制启用 NoMount 为内置模块 (=y)
-        echo "CONFIG_NOMOUNT=y" >> out/.config
-        # 强制启用 ReKernel (=y)
-        echo "CONFIG_REKERNEL=y" >> out/.config
-        # 重新处理依赖
-        make O=out ARCH=arm64 CC=clang olddefconfig
-        
-        # 开始编译
-        make O=out ARCH=arm64 CC=clang \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          CROSS_COMPILE=aarch64-linux-android- \
-          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-          -j$(nproc --all)
-
-    - name: Package AnyKernel3 Zip
-      run: |
-        # 下载 AnyKernel3
-        git clone https://github.com/osm0sis/AnyKernel3.git -b master AnyKernel3
-        rm -rf AnyKernel3/.git
-        
-        # 检查并拷贝生成的内核镜像
-        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-        elif [ -f out/arch/arm64/boot/Image.gz ]; then
-          cp out/arch/arm64/boot/Image.gz AnyKernel3/
-        else
-          cp out/arch/arm64/boot/Image AnyKernel3/
-        fi
-        
-        # 打包成卡刷包
-        cd AnyKernel3
-        zip -r9 ../Kernel_MSM8998_AllInOne_${{ github.run_id }}.zip * -x .git/*
-
-    - name: Upload Flashable ZIP
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnyKernel3-Flashable-Zip
-        path: Kernel_MSM8998_AllInOne_*.zip
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_AllInOne
+          path: Kernel_AllInOne_${{ github.run_number }}.zip
