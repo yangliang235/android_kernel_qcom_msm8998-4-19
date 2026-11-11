@@ -1,4 +1,4 @@
-name: Build Kernel (Swappiness, NoMount, ReKernel)
+name: Build Kernel (Swappiness, NoMount, ReKernel, ZRAM)
 
 on:
   workflow_dispatch:
@@ -240,7 +240,6 @@ jobs:
 
           echo "🔧 解除 memcontrol.c 中 swappiness 最大 100 的限制..."
           if [ -f "mm/memcontrol.c" ]; then
-            # 将硬编码的 100 改成 200
             sed -i 's/if (val > 100)/if (val > 200)/g' mm/memcontrol.c
           fi
 
@@ -289,7 +288,10 @@ jobs:
             scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/vendor/msm8998-oneplus.config
           fi
 
-          echo "🔧 注入自定义开关..."
+          echo "🔧 注入自定义开关 (包含 ZRAM 及其回写)..."
+          # 确保 ZRAM 是内置的，这是 ZRAM_WRITEBACK 的硬性依赖
+          echo "CONFIG_ZRAM=y" >> .config
+          echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
           echo "CONFIG_DEFAULT_SWAPPINESS=200" >> .config
           echo "CONFIG_NOMOUNT=y" >> .config
           echo "CONFIG_REKERNEL=y" >> .config
