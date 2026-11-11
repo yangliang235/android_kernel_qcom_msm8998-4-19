@@ -243,6 +243,12 @@ jobs:
             sed -i 's/if (val > 100)/if (val > 200)/g' mm/memcontrol.c
           fi
 
+          echo "🔧 解除 sysctl.c 中 swappiness 最大 100 的限制..."
+          if [ -f "kernel/sysctl.c" ]; then
+            # 精准定位 swappiness 配置块，将其 extra2 的上限从 one_hundred 改为 int_max
+            sed -i '/\.procname\s*=\s*"swappiness"/,/^	},/ s/\.extra2\s*=\s*&one_hundred,/.extra2 = \&int_max,/g' kernel/sysctl.c
+          fi
+
           echo "🔧 修复高通 clk trace.h 找不到的问题..."
           if [ -f "drivers/clk/qcom/Makefile" ]; then
             grep -q "CFLAGS_clk-debug.o" drivers/clk/qcom/Makefile || echo "CFLAGS_clk-debug.o := -I\$(src)" >> drivers/clk/qcom/Makefile
