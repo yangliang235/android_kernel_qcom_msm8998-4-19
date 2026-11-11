@@ -224,7 +224,7 @@ jobs:
           print("🎉 Re:Kernel 补丁全部打入成功！")
           PYEOF
 
-      - name: Modify Swappiness & Setup Config
+      - name: Modify Swappiness & Fix Trace & Setup Config
         run: |
           echo "🔧 修改内核源码中的 Swappiness..."
           if [ -f "mm/swap.c" ]; then
@@ -233,6 +233,12 @@ jobs:
           fi
           if grep -q "config DEFAULT_SWAPPINESS" mm/Kconfig; then
             sed -i '/config DEFAULT_SWAPPINESS/,/default 60/ s/default 60/default 200/' mm/Kconfig
+          fi
+
+          echo "🔧 修复高通 clk trace.h 找不到的问题..."
+          # 手动给 clk-debug.o 添加 -I$(src) 编译选项
+          if [ -f "drivers/clk/qcom/Makefile" ]; then
+            grep -q "CFLAGS_clk-debug.o" drivers/clk/qcom/Makefile || echo "CFLAGS_clk-debug.o := -I\$(src)" >> drivers/clk/qcom/Makefile
           fi
 
       - name: Build Kernel
