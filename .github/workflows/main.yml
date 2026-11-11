@@ -237,48 +237,71 @@ jobs:
 
       - name: Build Kernel
         run: |
+          set -o pipefail
           make clean && make mrproper
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu-"
           
           echo "🔧 生成基础 .config..."
-          # 使用你仓库中实际存在的主配置路径
           make $MAKE_ARGS vendor/msm8998-perf_defconfig
           
-          # 检查是否成功生成 .config
           if [ ! -f ".config" ]; then
             echo "❌ 致命错误：基础 .config 文件未生成！"
             exit 1
           fi
 
-          # 检查并合并一加专属的碎片配置 (Fragments)
           if [ -f "arch/arm64/configs/vendor/msm8998-oneplus.config" ]; then
-            echo "🔧 合并 OnePlus 碎片配置 (msm8998-oneplus.config)..."
+            echo "🔧 合并 OnePlus 碎片配置..."
             scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/vendor/msm8998-oneplus.config
           fi
 
-          echo "🔧 注入自定义开关 (Swappiness, NoMount, ReKernel)..."
-          # 直接追加到 .config，避免污染原版 defconfig
+          echo "🔧 注入自定义开关..."
           echo "CONFIG_DEFAULT_SWAPPINESS=200" >> .config
           echo "CONFIG_NOMOUNT=y" >> .config
           echo "CONFIG_REKERNEL=y" >> .config
+          # 强制要求生成 appended DTB 格式，避免打包时找不到镜像
+          echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> .config
 
-          # 同步配置并解决依赖
           make $MAKE_ARGS olddefconfig
           
-          echo "🚀 开始编译内核..."
-          make $MAKE_ARGS -j$(nproc) 2>&1 | tee build.log
+          echo "🚀 开始编译内核主体..."
+          # 直接编译 Image.gz-dtb 目标
+          make $MAKE_ARGS -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
+          
+          echo "🚀 开始编译内核模块..."
+          make $MAKE_ARGS -j$(nproc) modules 2>&1 | tee -a build.log
 
       - name: Package Kernel (AnyKernel3)
         run: |
+          set -o pipefail
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master AnyKernel3
           rm -rf AnyKernel3/.git
-          KERNEL_IMAGE=$(find arch/arm64/boot -name "Image.gz*" | head -n 1)
+          
+          echo "🔍 检查 arch/arm64/boot/ 目录内容："
+          ls -lh arch/arm64/boot/
+          
+          KERNEL_IMAGE=""
+          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
+            KERNEL_IMAGE="arch/arm64/boot/Image.gz-dtb"
+          elif [ -f "arch/arm64/boot/Image.gz" ]; then
+            KERNEL_IMAGE="arch/arm64/boot/Image.gz"
+          elif [ -f "arch/arm64/boot/Image" ]; then
+            KERNEL_IMAGE="arch/arm64/boot/Image"
+          fi
+
           if [ -n "$KERNEL_IMAGE" ]; then
-            cp $KERNEL_IMAGE AnyKernel3/
+            echo "✅ 找到编译好的镜像: $KERNEL_IMAGE，正在替换 AnyKernel3 中的旧镜像..."
+            
+            # 删除 AnyKernel3 原本自带的占位文件
+            rm -f AnyKernel3/Image.gz-dtb AnyKernel3/Image.gz AnyKernel3/Image
+            
+            # 复制我们编译出来的新镜像
+            cp $KERNEL_IMAGE AnyKernel3/Image.gz-dtb
+            
             cd AnyKernel3
             zip -r9 ../Kernel_AllInOne_${{ github.run_number }}.zip *
+            echo "✅ 打包完成！"
           else
-            echo "❌ 编译失败！未找到生成的内核镜像。"
+            echo "❌ 编译失败！在 arch/arm64/boot/ 下未找到任何内核镜像(Image*)。"
             exit 1
           fi
 
