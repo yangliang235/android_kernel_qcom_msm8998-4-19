@@ -254,6 +254,11 @@ jobs:
           if [ -f "include/trace/events/msm_cam.h" ]; then
             sed -i 's|#include "msm_isp.h"|#include "../../../drivers/media/platform/msm/camera_v2/isp/msm_isp.h"|g' include/trace/events/msm_cam.h
           fi
+          
+          echo "🔧 修复 msm_sensor.h 找不到 msm_camera_i2c.h 的问题..."
+          if [ -f "drivers/media/platform/msm/camera_v2/sensor/msm_sensor.h" ]; then
+            sed -i 's|#include "msm_camera_i2c.h"|#include "io/msm_camera_i2c.h"|g' drivers/media/platform/msm/camera_v2/sensor/msm_sensor.h
+          fi
 
       - name: Build Kernel
         run: |
