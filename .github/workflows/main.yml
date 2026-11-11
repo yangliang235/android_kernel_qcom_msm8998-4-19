@@ -143,27 +143,29 @@ jobs:
               default y
           EOF
 
-          # 4. 执行 Python 脚本精准打补丁
+          # 4. 执行升级版 Python 脚本（使用正则和函数锚点，防止找不到特征码）
           python3 - << 'PYEOF'
           import sys
+          import re
 
           def patch_file(filepath, targets):
               with open(filepath, 'r') as f: content = f.read()
-              for target, insert_code, pos in targets:
-                  if target not in content:
-                      print(f"❌ 致命错误: 找不到特征码 -> {filepath} : {target}")
+              for target_pattern, insert_code, pos in targets:
+                  match = re.search(target_pattern, content)
+                  if not match:
+                      print(f"❌ 致命错误: 找不到特征码 -> {filepath} : {target_pattern}")
                       sys.exit(1)
                   if pos == 'before':
-                      content = content.replace(target, insert_code + target, 1)
+                      content = content[:match.start()] + insert_code + '\n' + content[match.start():]
                   else:
-                      content = content.replace(target, target + insert_code, 1)
+                      content = content[:match.end()] + '\n' + insert_code + content[match.end():]
               with open(filepath, 'w') as f: f.write(content)
               print(f"✅ 成功修补 {filepath}")
 
           # --- 修补 binder.c ---
           binder_c_targets = [
-              ('#include <linux/sched.h>', '\n#include "../rekernel/rekernel.h"', 'after'),
-              ('\t\ttarget_proc = target_thread->proc;', '''
+              (r'static void binder_transaction\(', '#include "../rekernel/rekernel.h"\n', 'before'),
+              (r'\s*target_proc\s*=\s*target_thread->proc;', '''
           \t\tif (start_rekernel_server() == 0) {
           \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
           \t\t\t\t(task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) &&
@@ -174,7 +176,7 @@ jobs:
           \t\t\t}
           \t\t}
           ''', 'before'),
-              ('\t\te->to_node = target_node->debug_id;', '''
+              (r'e->to_node\s*=\s*target_node->debug_id;', '''
           \t\tif (start_rekernel_server() == 0) {
           \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
           \t\t\t\t(task_uid(target_proc->tsk).val > MIN_USERAPP_UID) &&
@@ -189,9 +191,9 @@ jobs:
 
           # --- 修补 binder_alloc.c ---
           alloc_c_targets = [
-              ('#include "binder_alloc.h"', '\n#include "../rekernel/rekernel.h"', 'after'),
-              ('\tstruct rb_node *n = alloc->free_buffers.rb_node;', '\n\tstruct task_struct *proc_task = NULL;', 'before'),
-              ('\tif (is_async &&\n\t    alloc->free_async_space < size + sizeof(struct binder_buffer)) {', '''
+              (r'static struct binder_buffer \*binder_alloc_new_buf_locked\(', '#include "../rekernel/rekernel.h"\n', 'before'),
+              (r'struct rb_node \*n = alloc->free_buffers.rb_node;', '\n\tstruct task_struct *proc_task = NULL;\n', 'before'),
+              (r'if \(is_async\s*&&', '''
           \tif (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
           \t\trcu_read_lock();
           \t\tproc_task = find_task_by_vpid(alloc->pid);
@@ -209,8 +211,8 @@ jobs:
 
           # --- 修补 signal.c ---
           signal_c_targets = [
-              ('#include <linux/sched/task.h>', '\n#include "../rekernel/rekernel.h"', 'after'),
-              ('\tif (lock_task_sighand(p, &flags)) {', '''
+              (r'int do_send_sig_info\(', '#include "../rekernel/rekernel.h"\n', 'before'),
+              (r'if \(lock_task_sighand\(p, &flags\)\) {', '''
           \tif (start_rekernel_server() == 0) {
           \t\tif (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
           \t\t\tchar binder_kmsg[PACKET_SIZE];
