@@ -206,7 +206,8 @@ jobs:
           ]
 
           signal_c_targets = [
-              (r'int do_send_sig_info\(', '#include "../rekernel/rekernel.h"\n', 'before'),
+              # 这里修复了路径：signal.c 在 kernel/ 目录下，需要跳过一层到根目录，再进 drivers/
+              (r'int do_send_sig_info\(', '#include "../drivers/rekernel/rekernel.h"\n', 'before'),
               (r'if \(lock_task_sighand\(p, &flags\)\) {', '''
           \tif (start_rekernel_server() == 0) {
           \t\tif (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
@@ -258,17 +259,16 @@ jobs:
           echo "CONFIG_DEFAULT_SWAPPINESS=200" >> .config
           echo "CONFIG_NOMOUNT=y" >> .config
           echo "CONFIG_REKERNEL=y" >> .config
-          # 强制要求生成 appended DTB 格式，避免打包时找不到镜像
           echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> .config
 
           make $MAKE_ARGS olddefconfig
           
-          echo "🚀 开始编译内核主体..."
-          # 直接编译 Image.gz-dtb 目标
-          make $MAKE_ARGS -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
+          # 使用 -j4 限制并发，防止内存爆满导致的 LLVM Broken pipe
+          echo "🚀 开始编译内核主体（使用 -j4 以防内存溢出）..."
+          make $MAKE_ARGS -j4 Image.gz-dtb 2>&1 | tee build.log
           
           echo "🚀 开始编译内核模块..."
-          make $MAKE_ARGS -j$(nproc) modules 2>&1 | tee -a build.log
+          make $MAKE_ARGS -j4 modules 2>&1 | tee -a build.log
 
       - name: Package Kernel (AnyKernel3)
         run: |
@@ -290,13 +290,8 @@ jobs:
 
           if [ -n "$KERNEL_IMAGE" ]; then
             echo "✅ 找到编译好的镜像: $KERNEL_IMAGE，正在替换 AnyKernel3 中的旧镜像..."
-            
-            # 删除 AnyKernel3 原本自带的占位文件
             rm -f AnyKernel3/Image.gz-dtb AnyKernel3/Image.gz AnyKernel3/Image
-            
-            # 复制我们编译出来的新镜像
             cp $KERNEL_IMAGE AnyKernel3/Image.gz-dtb
-            
             cd AnyKernel3
             zip -r9 ../Kernel_AllInOne_${{ github.run_number }}.zip *
             echo "✅ 打包完成！"
