@@ -22,8 +22,13 @@ jobs:
       - name: Set up AOSP Clang Toolchain
         run: |
           mkdir -p prebuilts/clang/host/linux-x86/
-          git clone --depth=1 https://github.com/kdrag0n/aosp-clang -b clang-r596125 prebuilts/clang/host/linux-x86/clang-r596125
+          echo "⏳ 正在从 AOSP 官方源拉取 Clang r596125（由于仓库较大，请耐心等待）..."
+          # 从官方源拉取，规避 kdrag0n 仓库无该分支导致的 fatal 报错
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 aosp-clang-tmp
+          mv aosp-clang-tmp/clang-r596125 prebuilts/clang/host/linux-x86/
+          rm -rf aosp-clang-tmp
           echo "PATH=$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-r596125/bin:$PATH" >> $GITHUB_ENV
+          echo "✅ Clang 准备完毕"
 
       - name: Integrate NoMount
         run: |
@@ -157,9 +162,7 @@ jobs:
 
           # --- 修补 binder.c ---
           binder_c_targets = [
-              # 插入 include
               ('#include <linux/sched.h>', '\n#include "../rekernel/rekernel.h"', 'after'),
-              # 第一处插入
               ('\t\ttarget_proc = target_thread->proc;', '''
           \t\tif (start_rekernel_server() == 0) {
           \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
@@ -171,7 +174,6 @@ jobs:
           \t\t\t}
           \t\t}
           ''', 'before'),
-              # 第二处插入
               ('\t\te->to_node = target_node->debug_id;', '''
           \t\tif (start_rekernel_server() == 0) {
           \t\t\tif (target_proc && (NULL != target_proc->tsk) && (NULL != proc->tsk) &&
