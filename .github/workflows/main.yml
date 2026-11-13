@@ -326,17 +326,37 @@ jobs:
           with open(FILE, 'r') as f:
               content = f.read()
 
-          # 把 set_chg_ibat_vbat_max() 里的 fv_votable 投票者从 DEFAULT_VOTER 改为 BATT_PROFILE_VOTER
-          # 这样温度区域心跳重投时与 battery/voltage_max 读取的投票者一致，Magisk echo 能参与仲裁
-          pat = r'(vote\(chg->fv_votable,\s*\n?\s*)DEFAULT_VOTER(\s*,\s*true\s*,\s*vfloat\s*\*\s*1000\s*\)\s*;)'
-          rep = r'\1BATT_PROFILE_VOTER\2'
-          new_content, n = re.subn(pat, rep, content, count=1, flags=re.DOTALL)
-          if n != 1:
-              print("❌ op_dash_adapter.c 修补失败：找不到 fv_votable DEFAULT_VOTER 投票")
+          # 策略：先精确字符串替换，失败再回退宽松正则
+          old = "DEFAULT_VOTER, true, vfloat * 1000"
+          new = "BATT_PROFILE_VOTER, true, vfloat * 1000"
+          n = 0
+
+          if old in content:
+              content = content.replace(old, new, 1)
+              n = 1
+              print("✅ 使用精确字符串替换成功")
+          else:
+              pat = r'DEFAULT_VOTER(\s*,\s*true\s*,\s*vfloat\s*\*\s*1000)'
+              content, n = re.subn(pat, r'BATT_PROFILE_VOTER\1', content, count=1)
+              if n >= 1:
+                  print("✅ 使用宽松正则替换成功")
+
+          if n < 1:
+              print("❌ op_dash_adapter.c 修补失败")
+              print("  诊断信息：")
+              print(f"  文件中 'DEFAULT_VOTER' 出现次数: {content.count('DEFAULT_VOTER')}")
+              print(f"  文件中 'vfloat * 1000' 出现次数: {content.count('vfloat * 1000')}")
+              print(f"  文件中 'fv_votable' 出现次数: {content.count('fv_votable')}")
+              idx = content.find('set_chg_ibat_vbat_max')
+              if idx >= 0:
+                  print("  set_chg_ibat_vbat_max 附近内容：")
+                  print(content[idx:idx+800])
+              else:
+                  print("  文件中找不到 set_chg_ibat_vbat_max 函数")
               sys.exit(1)
 
           with open(FILE, 'w') as f:
-              f.write(new_content)
+              f.write(content)
 
           print("✅ op_dash_adapter.c 修补完成 (fv_votable: DEFAULT_VOTER -> BATT_PROFILE_VOTER)")
           PYEOF
