@@ -245,7 +245,6 @@ jobs:
 
           echo "🔧 解除 sysctl.c 中 swappiness 最大 100 的限制..."
           if [ -f "kernel/sysctl.c" ]; then
-            # 精准定位 swappiness 配置块，将其 extra2 的上限从 one_hundred 改为 int_max
             sed -i '/\.procname\s*=\s*"swappiness"/,/^	},/ s/\.extra2\s*=\s*&one_hundred,/.extra2 = \&int_max,/g' kernel/sysctl.c
           fi
 
@@ -275,6 +274,73 @@ jobs:
             grep -q "CFLAGS_ipa.o" drivers/platform/msm/ipa/ipa_v2/Makefile || echo "CFLAGS_ipa.o := -I\$(src)" >> drivers/platform/msm/ipa/ipa_v2/Makefile
           fi
 
+      - name: Patch Power Supply (4.5V Default + Magisk Writeable)
+        run: |
+          echo "🔧 修补 qpnp-smb2.c：默认满电 4.5V + 允许 Magisk 写入 voltage_max + echo 同步温度区域..."
+          python3 - << 'PYEOF'
+          import re
+          import sys
+
+          FILE = "drivers/power/supply/qcom/qpnp-smb2.c"
+
+          with open(FILE, 'r') as f:
+              content = f.read()
+
+          # Patch 1: 在 smb2_parse_dt() 末尾强制 vbatmax[BATT_TEMP_NORMAL] = 4500
+          pat1 = r'(chg->ufp_only_mode = of_property_read_bool\(node,\s*\n\s*"qcom,ufp-only-mode"\);)'
+          rep1 = r'\1\n\n\t/* OnePlus: force 4.5V default full-charge voltage */\n\tchg->vbatmax[BATT_TEMP_NORMAL] = 4500;'
+          content, n1 = re.subn(pat1, rep1, content, count=1, flags=re.DOTALL)
+          if n1 != 1:
+              print("❌ Patch1 失败：找不到 ufp-only-mode 特征")
+              sys.exit(1)
+
+          # Patch 2: smb2_batt_prop_is_writeable() 允许写 POWER_SUPPLY_PROP_VOLTAGE_MAX
+          pat2 = r'(case POWER_SUPPLY_PROP_DIE_HEALTH:\s*\n\s*return 1;)'
+          rep2 = r'\1\n\tcase POWER_SUPPLY_PROP_VOLTAGE_MAX:\n\t\treturn 1;'
+          content, n2 = re.subn(pat2, rep2, content, count=1, flags=re.DOTALL)
+          if n2 != 1:
+              print("❌ Patch2 失败：找不到 DIE_HEALTH 特征")
+              sys.exit(1)
+
+          # Patch 3: smb2_batt_set_prop() 里 echo VOLTAGE_MAX 时同步 vbatmax[NORMAL]
+          pat3 = r'(case POWER_SUPPLY_PROP_VOLTAGE_MAX:\s*\n\s*chg->batt_profile_fv_uv = val->intval;\s*\n\s*vote\(chg->fv_votable, BATT_PROFILE_VOTER, true, val->intval\);)'
+          rep3 = r'\1\n\t\tchg->vbatmax[BATT_TEMP_NORMAL] = val->intval / 1000;'
+          content, n3 = re.subn(pat3, rep3, content, count=1, flags=re.DOTALL)
+          if n3 != 1:
+              print("❌ Patch3 失败：找不到 VOLTAGE_MAX set 特征")
+              sys.exit(1)
+
+          with open(FILE, 'w') as f:
+              f.write(content)
+
+          print(f"✅ qpnp-smb2.c 修补完成 (patch1={n1}, patch2={n2}, patch3={n3})")
+          PYEOF
+
+          echo "🔧 修补 op_dash_adapter.c：温度区域投票者改为 BATT_PROFILE_VOTER..."
+          python3 - << 'PYEOF'
+          import re
+          import sys
+
+          FILE = "drivers/power/supply/qcom/op_dash_adapter.c"
+
+          with open(FILE, 'r') as f:
+              content = f.read()
+
+          # 把 set_chg_ibat_vbat_max() 里的 fv_votable 投票者从 DEFAULT_VOTER 改为 BATT_PROFILE_VOTER
+          # 这样温度区域心跳重投时与 battery/voltage_max 读取的投票者一致，Magisk echo 能参与仲裁
+          pat = r'(vote\(chg->fv_votable,\s*\n?\s*)DEFAULT_VOTER(\s*,\s*true\s*,\s*vfloat\s*\*\s*1000\s*\)\s*;)'
+          rep = r'\1BATT_PROFILE_VOTER\2'
+          new_content, n = re.subn(pat, rep, content, count=1, flags=re.DOTALL)
+          if n != 1:
+              print("❌ op_dash_adapter.c 修补失败：找不到 fv_votable DEFAULT_VOTER 投票")
+              sys.exit(1)
+
+          with open(FILE, 'w') as f:
+              f.write(new_content)
+
+          print("✅ op_dash_adapter.c 修补完成 (fv_votable: DEFAULT_VOTER -> BATT_PROFILE_VOTER)")
+          PYEOF
+
       - name: Build Kernel
         run: |
           set -o pipefail
@@ -295,7 +361,6 @@ jobs:
           fi
 
           echo "🔧 注入自定义开关 (包含 ZRAM 及其回写)..."
-          # 确保 ZRAM 是内置的，这是 ZRAM_WRITEBACK 的硬性依赖
           echo "CONFIG_ZRAM=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
           echo "CONFIG_DEFAULT_SWAPPINESS=200" >> .config
