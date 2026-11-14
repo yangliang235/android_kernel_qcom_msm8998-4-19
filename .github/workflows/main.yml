@@ -286,7 +286,6 @@ jobs:
           with open(FILE, 'r') as f:
               content = f.read()
 
-          # Patch 1: 在 smb2_parse_dt() 末尾强制 vbatmax[BATT_TEMP_NORMAL] = 4500
           pat1 = r'(chg->ufp_only_mode = of_property_read_bool\(node,\s*\n\s*"qcom,ufp-only-mode"\);)'
           rep1 = r'\1\n\n\t/* OnePlus: force 4.5V default full-charge voltage */\n\tchg->vbatmax[BATT_TEMP_NORMAL] = 4500;'
           content, n1 = re.subn(pat1, rep1, content, count=1, flags=re.DOTALL)
@@ -294,7 +293,6 @@ jobs:
               print("❌ Patch1 失败：找不到 ufp-only-mode 特征")
               sys.exit(1)
 
-          # Patch 2: smb2_batt_prop_is_writeable() 允许写 POWER_SUPPLY_PROP_VOLTAGE_MAX
           pat2 = r'(case POWER_SUPPLY_PROP_DIE_HEALTH:\s*\n\s*return 1;)'
           rep2 = r'\1\n\tcase POWER_SUPPLY_PROP_VOLTAGE_MAX:\n\t\treturn 1;'
           content, n2 = re.subn(pat2, rep2, content, count=1, flags=re.DOTALL)
@@ -302,7 +300,6 @@ jobs:
               print("❌ Patch2 失败：找不到 DIE_HEALTH 特征")
               sys.exit(1)
 
-          # Patch 3: smb2_batt_set_prop() 里 echo VOLTAGE_MAX 时同步 vbatmax[NORMAL]
           pat3 = r'(case POWER_SUPPLY_PROP_VOLTAGE_MAX:\s*\n\s*chg->batt_profile_fv_uv = val->intval;\s*\n\s*vote\(chg->fv_votable, BATT_PROFILE_VOTER, true, val->intval\);)'
           rep3 = r'\1\n\t\tchg->vbatmax[BATT_TEMP_NORMAL] = val->intval / 1000;'
           content, n3 = re.subn(pat3, rep3, content, count=1, flags=re.DOTALL)
@@ -388,7 +385,6 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # ============ 验证 CONFIG_ZRAM_WRITEBACK 最终是否生效 ============
           echo ""
           echo "🔍 检查 .config 中 ZRAM 相关配置:"
           grep -E "^CONFIG_ZRAM=|^CONFIG_ZRAM_WRITEBACK=|^CONFIG_ZSMALLOC=" .config || echo "(未匹配到)"
@@ -412,7 +408,6 @@ jobs:
             exit 1
           fi
 
-          # ============ 检查源码里是否有 throttle（writeback_limit）代码 ============
           echo ""
           echo "🔍 检查 zram_drv.c 是否包含 writeback_limit（throttle）代码:"
           if grep -q "writeback_limit" drivers/block/zram/zram_drv.c; then
@@ -442,51 +437,51 @@ jobs:
 
           # 用 OnePlus 5/5T 专用 anykernel.sh 覆盖 upstream 默认模板
           cat > AnyKernel3/anykernel.sh << 'AK3EOF'
-### AnyKernel3 Ramdisk Mod Script
-## osm0sis @ xda-developers
-
-### AnyKernel setup
-# global properties
-properties() { '
-kernel.string=
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=1
-device.name1=dumpling
-device.name2=OnePlus5T
-device.name3=cheeseburger
-device.name4=OnePlus5
-device.name5=
-supported.versions=
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; } # end properties
-
-
-### AnyKernel install
-## boot files attributes
-boot_attributes() {
-set_perm_recursive 0 0 755 644 $RAMDISK/*;
-set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
-} # end attributes
-
-# boot shell variables
-BLOCK=/dev/block/bootdevice/by-name/boot;
-IS_SLOT_DEVICE=0;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-
-# import functions/variables and setup patching - see for reference (DO NOT REMOVE)
-. tools/ak3-core.sh;
-
-# boot install
-dump_boot;
-
-write_boot;
-## end boot install
-AK3EOF
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+          
+          ### AnyKernel setup
+          # global properties
+          properties() { '
+          kernel.string=
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=dumpling
+          device.name2=OnePlus5T
+          device.name3=cheeseburger
+          device.name4=OnePlus5
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+          
+          
+          ### AnyKernel install
+          ## boot files attributes
+          boot_attributes() {
+          set_perm_recursive 0 0 755 644 $RAMDISK/*;
+          set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          } # end attributes
+          
+          # boot shell variables
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          
+          # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+          . tools/ak3-core.sh;
+          
+          # boot install
+          dump_boot;
+          
+          write_boot;
+          ## end boot install
+          AK3EOF
 
           echo "🔍 检查 arch/arm64/boot/ 目录内容："
           ls -lh arch/arm64/boot/
