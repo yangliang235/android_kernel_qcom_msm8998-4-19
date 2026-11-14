@@ -387,6 +387,46 @@ jobs:
           echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> .config
 
           make $MAKE_ARGS olddefconfig
+
+          # ============ 验证 CONFIG_ZRAM_WRITEBACK 最终是否生效 ============
+          echo ""
+          echo "🔍 检查 .config 中 ZRAM 相关配置:"
+          grep -E "^CONFIG_ZRAM=|^CONFIG_ZRAM_WRITEBACK=|^CONFIG_ZSMALLOC=" .config || echo "(未匹配到)"
+
+          if ! grep -q "^CONFIG_ZRAM_WRITEBACK=y" .config; then
+            echo "⚠️ olddefconfig 后 CONFIG_ZRAM_WRITEBACK 不是 y，尝试强制恢复..."
+            echo "CONFIG_ZRAM=y" >> .config
+            echo "CONFIG_ZSMALLOC=y" >> .config
+            echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
+            make $MAKE_ARGS olddefconfig
+          fi
+
+          if grep -q "^CONFIG_ZRAM_WRITEBACK=y" .config; then
+            echo "✅ CONFIG_ZRAM_WRITEBACK=y 最终确认生效"
+          else
+            echo "❌ CONFIG_ZRAM_WRITEBACK 无法启用，以下为 Kconfig 依赖信息:"
+            sed -n '/config ZRAM_WRITEBACK/,/^$/p' drivers/block/zram/Kconfig || true
+            echo ""
+            echo "当前 ZRAM 相关配置:"
+            grep -iE "zram|zsmalloc" .config
+            exit 1
+          fi
+
+          # ============ 检查源码里是否有 throttle（writeback_limit）代码 ============
+          echo ""
+          echo "🔍 检查 zram_drv.c 是否包含 writeback_limit（throttle）代码:"
+          if grep -q "writeback_limit" drivers/block/zram/zram_drv.c; then
+            echo "✅ 源码包含 writeback_limit 相关代码，共 $(grep -c "writeback_limit" drivers/block/zram/zram_drv.c) 处"
+          else
+            echo "❌ 源码里没有 writeback_limit 代码！"
+            echo "   说明你的内核源码没有合入 zram-writeback-throttle 补丁。"
+            echo "   仅开 CONFIG_ZRAM_WRITEBACK 只能得到 backing_dev，不会有 writeback_limit。"
+            echo "   需要在 workflow 里额外 cherry-pick 以下补丁（来自 5.0 / 4.14.y backport）:"
+            echo "   - zram: writeback throttle"
+            echo "   - zram: add a new knob for writeback limit"
+            echo "   - zram: add a new knob for writeback limit enable"
+            exit 1
+          fi
           
           echo "🚀 开始编译内核主体（使用 -j4 防爆内存）..."
           make $MAKE_ARGS -j4 Image.gz-dtb 2>&1 | tee build.log
@@ -399,7 +439,55 @@ jobs:
           set -o pipefail
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master AnyKernel3
           rm -rf AnyKernel3/.git
-          
+
+          # 用 OnePlus 5/5T 专用 anykernel.sh 覆盖 upstream 默认模板
+          cat > AnyKernel3/anykernel.sh << 'AK3EOF'
+### AnyKernel3 Ramdisk Mod Script
+## osm0sis @ xda-developers
+
+### AnyKernel setup
+# global properties
+properties() { '
+kernel.string=
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=1
+device.name1=dumpling
+device.name2=OnePlus5T
+device.name3=cheeseburger
+device.name4=OnePlus5
+device.name5=
+supported.versions=
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; } # end properties
+
+
+### AnyKernel install
+## boot files attributes
+boot_attributes() {
+set_perm_recursive 0 0 755 644 $RAMDISK/*;
+set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+} # end attributes
+
+# boot shell variables
+BLOCK=/dev/block/bootdevice/by-name/boot;
+IS_SLOT_DEVICE=0;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+
+# import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+. tools/ak3-core.sh;
+
+# boot install
+dump_boot;
+
+write_boot;
+## end boot install
+AK3EOF
+
           echo "🔍 检查 arch/arm64/boot/ 目录内容："
           ls -lh arch/arm64/boot/
           
