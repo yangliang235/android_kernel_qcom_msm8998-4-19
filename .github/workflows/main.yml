@@ -375,19 +375,24 @@ jobs:
             scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/vendor/msm8998-oneplus.config
           fi
 
-          echo "🔧 注入自定义开关 (包含 ZRAM 及其回写)..."
+          echo "🔧 注入自定义开关 (包含 ZRAM 及其回写 + LOOP 数量)..."
           echo "CONFIG_ZRAM=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
           echo "CONFIG_DEFAULT_SWAPPINESS=200" >> .config
           echo "CONFIG_NOMOUNT=y" >> .config
           echo "CONFIG_REKERNEL=y" >> .config
           echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> .config
+          echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=128" >> .config
 
           make $MAKE_ARGS olddefconfig
 
           echo ""
           echo "🔍 检查 .config 中 ZRAM 相关配置:"
           grep -E "^CONFIG_ZRAM=|^CONFIG_ZRAM_WRITEBACK=|^CONFIG_ZSMALLOC=" .config || echo "(未匹配到)"
+
+          echo ""
+          echo "🔍 检查 .config 中 LOOP 相关配置:"
+          grep -E "^CONFIG_BLK_DEV_LOOP" .config || echo "(未匹配到)"
 
           if ! grep -q "^CONFIG_ZRAM_WRITEBACK=y" .config; then
             echo "⚠️ olddefconfig 后 CONFIG_ZRAM_WRITEBACK 不是 y，尝试强制恢复..."
@@ -406,6 +411,13 @@ jobs:
             echo "当前 ZRAM 相关配置:"
             grep -iE "zram|zsmalloc" .config
             exit 1
+          fi
+
+          if grep -q "^CONFIG_BLK_DEV_LOOP_MIN_COUNT=128" .config; then
+            echo "✅ CONFIG_BLK_DEV_LOOP_MIN_COUNT=128 最终确认生效"
+          else
+            echo "⚠️ CONFIG_BLK_DEV_LOOP_MIN_COUNT 不是 128，实际值:"
+            grep -E "^CONFIG_BLK_DEV_LOOP" .config || true
           fi
 
           echo ""
